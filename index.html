@@ -787,14 +787,19 @@
 const { useState, useEffect, useCallback } = React;
 
 /* ─── DATA ─────────────────────────────────────── */
-const START = new Date('2026-03-12');
-const END   = new Date('2026-06-30');
+// Parse as LOCAL midnight — avoids UTC offset shifting dates (critical for IST +5:30 etc.)
+function localDate(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+const START = localDate('2026-03-12');
+const END   = localDate('2026-06-30');
 
 const PHASES = [
-  { id:1, name:'Phase 1: Foundation',       color:'#4f8ef7', dates:'Mar 12 – Apr 6',  start:'2026-03-12', end:'2026-04-06', weeks:[1,2,3,4] },
-  { id:2, name:'Phase 2: Intermediate',     color:'#7c6af7', dates:'Apr 7 – May 4',   start:'2026-04-07', end:'2026-05-04', weeks:[5,6,7,8] },
-  { id:3, name:'Phase 3: Advanced',         color:'#2dd4a0', dates:'May 5 – Jun 1',   start:'2026-05-05', end:'2026-06-01', weeks:[9,10,11,12] },
-  { id:4, name:'Phase 4: Interview Sprint', color:'#f7c948', dates:'Jun 2 – Jun 30',  start:'2026-06-02', end:'2026-06-30', weeks:[13,14,15,16] },
+  { id:1, name:'Phase 1: Foundation',       color:'#4f8ef7', dates:'Mar 12 – Apr 6',  start:localDate('2026-03-12'), end:localDate('2026-04-06'), weeks:[1,2,3,4] },
+  { id:2, name:'Phase 2: Intermediate',     color:'#7c6af7', dates:'Apr 7 – May 4',   start:localDate('2026-04-07'), end:localDate('2026-05-04'), weeks:[5,6,7,8] },
+  { id:3, name:'Phase 3: Advanced',         color:'#2dd4a0', dates:'May 5 – Jun 1',   start:localDate('2026-05-05'), end:localDate('2026-06-01'), weeks:[9,10,11,12] },
+  { id:4, name:'Phase 4: Interview Sprint', color:'#f7c948', dates:'Jun 2 – Jun 30',  start:localDate('2026-06-02'), end:localDate('2026-06-30'), weeks:[13,14,15,16] },
 ];
 
 const WEEKS = [
@@ -988,11 +993,13 @@ function makeDefault() {
 /* ─── DATE UTILS ─────────────────────────────────── */
 function today() {
   const d = new Date();
+  // Strip time — returns local midnight, not UTC midnight
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+// Integer day difference (b - a), works on local-midnight dates only
 function daysDiff(a, b) {
-  return Math.round((b - a) / 86400000);
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
 function totalDays() { return daysDiff(START, END) + 1; }
@@ -1000,26 +1007,20 @@ function daysSinceStart() { return Math.max(0, Math.min(daysDiff(START, today())
 function overallPct() { return Math.round((daysSinceStart() / totalDays()) * 100); }
 
 function getWeekForDate(d) {
-  const ms = d.getTime();
-  let cur = new Date(START.getTime());
-  let wid = 1;
-  for (let w of WEEKS) {
-    const nxt = new Date(cur.getTime() + 7 * 86400000);
-    if (ms >= cur.getTime() && ms < nxt.getTime()) return w.id;
-    cur = nxt; wid++;
-  }
-  return WEEKS[WEEKS.length-1].id;
+  const diff = daysDiff(START, d);
+  if (diff < 0) return 1;
+  const wid = Math.floor(diff / 7) + 1;
+  return Math.min(Math.max(wid, 1), 16);
 }
 
 function currentWeekId() { return getWeekForDate(today()); }
 
 /* ─── PHASE PROGRESS ─────────────────────────────── */
 function phaseTimePct(phase) {
-  const s = new Date(phase.start), e = new Date(phase.end);
   const t = today();
-  if (t < s) return 0;
-  if (t > e) return 100;
-  return Math.round(((t - s) / (e - s)) * 100);
+  if (t < phase.start) return 0;
+  if (t > phase.end) return 100;
+  return Math.round((daysDiff(phase.start, t) / daysDiff(phase.start, phase.end)) * 100);
 }
 
 function phaseCompletionPct(phase, days) {
@@ -1054,19 +1055,17 @@ function weekCompletionPct(week, days) {
 
 /* ─── STREAK ──────────────────────────────────────── */
 function computeStreak(days) {
-  // Count consecutive completed days backward from today
   let streak = 0;
   const t = today();
   for (let back = 0; back < 200; back++) {
-    const d = new Date(t.getTime() - back * 86400000);
+    // Build local date back `back` days — avoids DST issues with raw ms subtraction
+    const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() - back);
     const diff = daysDiff(START, d);
     if (diff < 0) break;
-    // Find week+day
-    const weekOffset = Math.floor(diff / 7);
-    const dayOffset  = diff % 7;
-    const wid = weekOffset + 1;
+    const wid = Math.floor(diff / 7) + 1;
+    const dayIdx = diff % 7;
     if (wid < 1 || wid > 16) { if (back === 0) continue; else break; }
-    if (days[`${wid}_${dayOffset}`]) streak++;
+    if (days[`${wid}_${dayIdx}`]) streak++;
     else if (back === 0) break;
     else break;
   }
@@ -1076,17 +1075,19 @@ function computeStreak(days) {
 /* ─── HEATMAP DATA ────────────────────────────────── */
 function buildHeatmap(days) {
   const cells = [];
+  const t = today();
   for (let i = 0; i < totalDays(); i++) {
-    const d = new Date(START.getTime() + i * 86400000);
+    // Build each date as local midnight — avoids DST/UTC offset drift
+    const d = new Date(START.getFullYear(), START.getMonth(), START.getDate() + i);
     const wid = Math.floor(i / 7) + 1;
     const dayIdx = i % 7;
     const key = `${wid}_${dayIdx}`;
-    const isPast = d <= today();
     cells.push({
       date: d,
       key,
       done: !!days[key],
-      isPast,
+      isPast: d <= t,
+      isToday: d.getTime() === t.getTime(),
       weekId: wid,
       dayIdx,
     });
@@ -1173,7 +1174,7 @@ function WeekRow({ week, days, onToggle, currentWkId }) {
   const phase = PHASES.find(p => p.weeks.includes(week.id));
 
   // is this week in the past?
-  const wEnd = new Date(START.getTime() + week.id * 7 * 86400000);
+  const wEnd = new Date(START.getFullYear(), START.getMonth(), START.getDate() + week.id * 7);
   const isPast = wEnd < today();
   const isCurrent = week.id === currentWkId;
   const behind = pct < 50 && isPast;
@@ -1230,13 +1231,21 @@ function Heatmap({ days }) {
   const numWeeks = Math.ceil(cells.length / 7);
 
   const getColor = (cell) => {
+    if (cell.isToday && !cell.done) return 'rgba(79,142,247,0.5)';
     if (!cell.isPast) return 'var(--bg3)';
     if (cell.done) return '#2dd4a0';
     return '#1a2238';
   };
 
-  const months = ['Mar', 'Apr', 'May', 'Jun'];
-  const monthStarts = [0, 19, 50, 80]; // approx column indices
+  // Build real month label positions from actual cell dates
+  const monthLabels = {};
+  cells.forEach((cell, i) => {
+    const wi = Math.floor(i / 7);
+    const mo = cell.date.getMonth();
+    const key = `${cell.date.getFullYear()}-${mo}`;
+    if (!monthLabels[key]) monthLabels[key] = { wi, label: cell.date.toLocaleDateString('en-IN', {month:'short'}) };
+  });
+  const monthPositions = Object.values(monthLabels);
 
   return (
     <div className="heatmap-wrap">
@@ -1248,13 +1257,13 @@ function Heatmap({ days }) {
       </div>
 
       <div style={{overflowX:'auto',paddingBottom:8}}>
-        {/* Month labels */}
+        {/* Month labels — positioned from real dates */}
         <div className="heatmap-month-row">
           {Array.from({length: numWeeks}).map((_, wi) => {
-            const mIdx = monthStarts.findIndex((ms, i) => wi === ms || (i > 0 && wi === monthStarts[i]));
+            const mo = monthPositions.find(m => m.wi === wi);
             return (
               <div key={wi} className="month-label-cell" style={{width:13}}>
-                {months[monthStarts.indexOf(wi)] || ''}
+                {mo ? mo.label : ''}
               </div>
             );
           })}
@@ -1277,18 +1286,21 @@ function Heatmap({ days }) {
                   const cell = cells[wi*7+di];
                   if (!cell) return <div key={di} style={{width:13,height:13}} />;
                   const color = getColor(cell);
-                  const dateStr = cell.date.toLocaleDateString('en-IN',{month:'short',day:'numeric'});
+                  const dateStr = cell.date.toLocaleDateString('en-IN',{weekday:'short',month:'short',day:'numeric'});
                   return (
-                    <div
-                      key={di}
-                      className="tooltip-wrap"
-                    >
+                    <div key={di} className="tooltip-wrap">
                       <div
                         className="heatmap-cell"
-                        style={{ background: color, opacity: cell.isPast ? 1 : 0.35 }}
-                        title={`${dateStr}: ${cell.done ? 'Done ✓' : 'Not done'}`}
+                        style={{
+                          background: color,
+                          opacity: cell.isPast || cell.isToday ? 1 : 0.3,
+                          outline: cell.isToday ? '2px solid var(--accent)' : 'none',
+                          outlineOffset: '1px',
+                        }}
                       />
-                      <div className="tooltip">{dateStr}: {cell.done ? '✅ Done' : '⬜ Not done'}</div>
+                      <div className="tooltip">
+                        {dateStr}{cell.isToday ? ' · Today' : ''}: {cell.done ? '✅ Done' : cell.isPast ? '⬜ Missed' : '🔒 Upcoming'}
+                      </div>
                     </div>
                   );
                 })}
@@ -1398,7 +1410,9 @@ function App() {
     <div className="app">
       {/* Header */}
       <div className="header">
-        <div className="header-badge">Mar 12 → Jun 30, 2026</div>
+        <div className="header-badge">
+          {today().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})} · Day {daysSinceStart()+1} of 111
+        </div>
         <h1>20 LPA+ Placement<br/>Roadmap Tracker</h1>
         <div className="header-sub">
           Striver A–Z DSA • 111 Days • 4 Phases • 455 Problems
